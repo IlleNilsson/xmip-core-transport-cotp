@@ -29,9 +29,11 @@ use std::time::Duration;
 pub use connection::Connection;
 pub use tpdu::{Connect, Tpdu};
 use transport::error::{Result, protocol_error};
+use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
 use transport::{Arrived, Directions, Transport};
 
+#[derive(Clone)]
 pub struct CotpTransport {
     bind: String,
     local_tsap: Vec<u8>,
@@ -168,12 +170,107 @@ impl Transport for CotpTransport {
     }
 }
 
+impl CotpTransport {
+    /// Both ends on this machine: an ephemeral local port, the default
+    /// TSAPs, the loopback timeout on every read.
+    #[must_use]
+    pub fn loopback() -> Self {
+        Self::new("127.0.0.1:0").timing_out_after(LOOPBACK_TIMEOUT)
+    }
+}
+
+/// A bound listener waiting for the one caller that delivers one message.
+struct Listening {
+    transport: CotpTransport,
+    listener: TcpListener,
+    address: String,
+}
+
+impl FarEnd for Listening {
+    fn address(&self) -> &str {
+        &self.address
+    }
+
+    fn take_one(self: Box<Self>) -> Result<Arrived> {
+        let mut connection = self.transport.accept_one(&self.listener)?;
+        let message = connection
+            .next_data()?
+            .ok_or_else(|| protocol_error("the caller disconnected without a message"))?;
+        // See the DR that follows, so the goodbye is read rather than met
+        // with a closed socket.
+        connection.next_data()?;
+        Ok(Arrived::new(connection.origin(), message))
+    }
+}
+
+impl Loopback for CotpTransport {
+    fn far_end(&self) -> Result<Box<dyn FarEnd>> {
+        let (listener, address) = self.bind()?;
+        Ok(Box::new(Listening {
+            transport: self.clone(),
+            listener,
+            address,
+        }))
+    }
+
+    fn send_to(&self, address: &str, payload: &[u8]) -> Result<()> {
+        Self::new("127.0.0.1:0")
+            .with_tsaps(self.local_tsap.clone(), self.remote_tsap.clone())
+            .with_tpdu_size_code(self.size_code)
+            .timing_out_after(LOOPBACK_TIMEOUT)
+            .send(address, payload)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn node() -> CotpTransport {
         CotpTransport::new("127.0.0.1:0").timing_out_after(Duration::from_secs(2))
+    }
+
+    fn edges() -> Vec<(&'static str, Vec<u8>)> {
+        vec![
+            ("empty", Vec::new()),
+            ("one byte", vec![0x2a]),
+            ("every byte", (0..=255).collect()),
+            ("nul run", vec![0; 512]),
+            ("high bytes", vec![0xff; 512]),
+            ("crlf storm", b"\r\n".repeat(400)),
+        ]
+    }
+
+    /// Three thousand bytes that are not all alike, so a segment out of
+    /// order would show.
+    fn long() -> Vec<u8> {
+        (0..=255u8).cycle().take(3000).collect()
+    }
+
+    #[test]
+    fn the_loopback_delivers_one_message_as_segments_and_takes_it() {
+        let arrived = CotpTransport::loopback().round(b"one tpdu").expect("round");
+        assert_eq!(arrived.bytes, b"one tpdu");
+        assert!(arrived.origin_uri.starts_with("cotp://127.0.0.1:"));
+        assert!(arrived.origin_uri.ends_with("?src-tsap=0100&dst-tsap=0102"));
+        let long = long();
+        assert_eq!(
+            CotpTransport::loopback().round(&long).expect("long").bytes,
+            long
+        );
+    }
+
+    #[test]
+    fn the_loopback_returns_the_edge_payloads_whole() {
+        let transport = CotpTransport::loopback();
+        assert!(transport.ceiling().is_none());
+        for (name, bytes) in edges() {
+            assert!(transport.refuses(&bytes).is_none(), "{name}");
+            let arrived = transport
+                .round(&bytes)
+                .unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!(arrived.bytes, bytes, "{name}");
+        }
     }
 
     #[test]
