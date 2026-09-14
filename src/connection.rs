@@ -12,6 +12,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use transport::error::{Result, protocol_error};
+pub use transport::hex::hex;
 use transport::socket;
 
 use crate::tpdu::{self, Connect, Tpdu};
@@ -27,27 +28,10 @@ pub struct Connection {
     tpdu_size: usize,
 }
 
-/// A TSAP as the origin URI writes it: its bytes in hex, `0102`.
-#[must_use]
-pub fn hex(tsap: &[u8]) -> String {
-    use std::fmt::Write;
-    let mut out = String::with_capacity(tsap.len() * 2);
-    for byte in tsap {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
-}
-
 /// A TSAP from what the URI wrote; `None` where it is not hex.
 #[must_use]
 pub fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
-        .collect()
+    transport::hex::unhex(text).ok()
 }
 
 impl Connection {
