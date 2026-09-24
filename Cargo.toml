@@ -18,6 +18,8 @@ path = "src/lib.rs"
 # (repository-model.md). Standard library otherwise: COTP is a few bytes of
 # header over a TCP stream.
 transport = { package = "xmip-core-transport", git = "https://github.com/IlleNilsson/xmip-core-transport", branch = "main" }
+# The estate's encoding primitives: a TSAP spelled in hex.
+codec = { package = "xmip-core-library-codec", git = "https://github.com/IlleNilsson/xmip-core-library-codec", branch = "main" }
 
 [dev-dependencies]
 # The loopback payloads the tests drive, from the capability's test

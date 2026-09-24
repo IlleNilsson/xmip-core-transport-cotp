@@ -128,8 +128,8 @@ impl CotpTransport {
         let mut remote = self.remote_tsap.clone();
         for pair in query.split('&').filter(|pair| !pair.is_empty()) {
             let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            let tsap = connection::from_hex(value)
-                .ok_or_else(|| protocol_error(format!("{value:?} is not a TSAP in hex")))?;
+            let tsap = codec::hex::decode(value)
+                .map_err(|_| protocol_error(format!("{value:?} is not a TSAP in hex")))?;
             match key {
                 "src-tsap" => local = tsap,
                 "dst-tsap" => remote = tsap,

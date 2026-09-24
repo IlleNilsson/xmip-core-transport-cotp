@@ -11,8 +11,8 @@ use std::io::BufReader;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
+use codec::hex;
 use transport::error::{Result, protocol_error};
-pub use transport::hex::hex;
 use transport::socket;
 
 use crate::tpdu::{self, Connect, Tpdu};
@@ -26,12 +26,6 @@ pub struct Connection {
     local_tsap: Vec<u8>,
     remote_tsap: Vec<u8>,
     tpdu_size: usize,
-}
-
-/// A TSAP from what the URI wrote; `None` where it is not hex.
-#[must_use]
-pub fn from_hex(text: &str) -> Option<Vec<u8>> {
-    transport::hex::unhex(text).ok()
 }
 
 impl Connection {
@@ -152,8 +146,8 @@ impl Connection {
         format!(
             "cotp://{}?src-tsap={}&dst-tsap={}",
             self.peer,
-            hex(&self.remote_tsap),
-            hex(&self.local_tsap)
+            hex::encode(&self.remote_tsap),
+            hex::encode(&self.local_tsap)
         )
     }
 
@@ -272,9 +266,6 @@ mod tests {
         assert!(!error.retryable);
         let answer = caller.join().expect("thread").expect("dr");
         assert_eq!(answer[1], 0x80, "answered with DR");
-        assert_eq!(from_hex("0102"), Some(vec![1, 2]));
-        assert!(from_hex("0g").is_none());
-        assert!(from_hex("012").is_none());
     }
 
     fn secs(n: u64) -> Duration {
