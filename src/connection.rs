@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use codec::hex;
 use transport::error::{Result, protocol_error};
+use transport::pool::{Pooled, alive};
 use transport::socket;
 
 use crate::tpdu::{self, Connect, Tpdu};
@@ -213,6 +214,15 @@ impl Connection {
             Some(frame) => tpdu::decode(&frame).map(Some),
             None => Ok(None),
         }
+    }
+}
+
+impl Pooled for Connection {
+    /// While the far end has not closed the connection. A DR it sent
+    /// meanwhile is read by the next exchange, which fails on it and goes
+    /// again on a new connection.
+    fn usable(&mut self) -> bool {
+        alive(&self.writer)
     }
 }
 

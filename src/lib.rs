@@ -29,6 +29,7 @@ use std::time::Duration;
 pub use connection::Connection;
 pub use tpdu::{Connect, Tpdu};
 use transport::error::{Result, protocol_error};
+use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
@@ -42,6 +43,8 @@ pub struct CotpTransport {
     remote_tsap: Vec<u8>,
     size_code: u8,
     timeout: Option<Duration>,
+    /// The listener the first receive binds, and every receive takes from.
+    receiving: Kept<TcpListener>,
 }
 
 impl CotpTransport {
@@ -56,6 +59,7 @@ impl CotpTransport {
             remote_tsap: vec![0x01, 0x02],
             size_code: tpdu::DEFAULT_SIZE_CODE,
             timeout: None,
+            receiving: Kept::new(),
         }
     }
 
@@ -150,10 +154,11 @@ impl Transport for CotpTransport {
         Directions::BOTH
     }
 
-    /// One caller's messages until it disconnects.
+    /// One caller's messages until it disconnects, from the listener the
+    /// first receive bound and kept.
     fn receive(&self) -> Result<Vec<Arrived>> {
-        let (listener, _) = self.bind()?;
-        let mut connection = self.accept_one(&listener)?;
+        let listener = self.receiving.bound(|| self.bind())?;
+        let mut connection = self.accept_one(listener)?;
         let origin = connection.origin();
         let mut arrived = Vec::new();
         while let Some(message) = connection.next_data()? {
@@ -280,6 +285,16 @@ mod tests {
     use super::*;
     use transport::payload::edge_payloads;
     use xcore::settings::Given;
+
+    #[test]
+    fn every_receive_takes_from_the_listener_the_first_bound() {
+        let receiver = CotpTransport::loopback();
+        receiver.receiving.bound(|| receiver.bind()).expect("bound");
+        let address = receiver.receiving.address().expect("address");
+        transport::kept::held_across_receives(&receiver, address, 5, |at, payload| {
+            CotpTransport::loopback().send_to(at, payload)
+        });
+    }
 
     #[test]
     fn cotp_declares_its_settings_and_reads_through_them() {
