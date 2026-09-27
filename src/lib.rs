@@ -32,7 +32,8 @@ use transport::error::{Result, protocol_error};
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Directions, Transport};
+use transport::{Arrived, Configured, Directions, Transport};
+use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
 #[derive(Clone)]
 pub struct CotpTransport {
@@ -171,6 +172,73 @@ impl Transport for CotpTransport {
     }
 }
 
+impl Configured for CotpTransport {
+    /// The address is where a Receive Location listens — `0.0.0.0:102` the
+    /// standard port; a Send Location calls the target its route gives.
+    const SETTINGS: &'static Settings = &Settings {
+        technology: env!("CARGO_PKG_NAME"),
+        settings: &[
+            Setting {
+                name: "src_tsap",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "This side's TSAP a call is made from, in hex; the usual client \
+                          TSAP when left out.",
+                applies: Applies::Send,
+            },
+            Setting {
+                name: "dst_tsap",
+                kind: Kind::Text,
+                presence: Presence::Optional,
+                meaning: "The far end's TSAP a call is made to, in hex; the usual server \
+                          TSAP when left out.",
+                applies: Applies::Send,
+            },
+            Setting {
+                name: "tpdu_size_code",
+                kind: Kind::Integer {
+                    minimum: 7,
+                    maximum: 13,
+                },
+                presence: Presence::Default(Fixed::Integer(tpdu::DEFAULT_SIZE_CODE as i64)),
+                meaning: "The TPDU size proposed or accepted at most, as the power of two \
+                          of its bytes.",
+                applies: Applies::Both,
+            },
+            Setting {
+                name: "timeout",
+                kind: Kind::Duration,
+                presence: Presence::Optional,
+                meaning: "How long a peer that stops mid-message is waited on; unbounded \
+                          when left out.",
+                applies: Applies::Both,
+            },
+        ],
+    };
+
+    fn configured(address: &str, settings: &Read) -> Result<Self> {
+        let size_code = u8::try_from(settings.integer("tpdu_size_code"))
+            .map_err(|_| protocol_error("a TPDU size code out of range"))?;
+        let mut transport = Self::new(address).with_tpdu_size_code(size_code);
+        let tsap = |name: &str| -> Result<Option<Vec<u8>>> {
+            settings
+                .optional_text(name)
+                .map(|hex| {
+                    codec::hex::decode(hex)
+                        .map_err(|_| protocol_error(format!("{name} {hex:?} is not hex")))
+                })
+                .transpose()
+        };
+        let local = tsap("src_tsap")?.unwrap_or_else(|| transport.local_tsap.clone());
+        let remote = tsap("dst_tsap")?.unwrap_or_else(|| transport.remote_tsap.clone());
+        transport = transport.with_tsaps(local, remote);
+        if let Some(timeout) = settings.optional_duration("timeout") {
+            transport = transport.timing_out_after(timeout);
+        }
+        Ok(transport)
+    }
+}
+
 impl CotpTransport {
     /// Both ends on this machine: an ephemeral local port, the default
     /// TSAPs, the loopback timeout on every read.
@@ -211,6 +279,29 @@ impl Loopback for CotpTransport {
 mod tests {
     use super::*;
     use transport::payload::edge_payloads;
+    use xcore::settings::Given;
+
+    #[test]
+    fn cotp_declares_its_settings_and_reads_through_them() {
+        assert_eq!(CotpTransport::SETTINGS.problems(), Vec::<String>::new());
+        let given = [
+            ("dst_tsap".to_string(), Given::Text("0301".to_string())),
+            ("tpdu_size_code".to_string(), Given::Integer(9)),
+        ];
+        let built = CotpTransport::open("0.0.0.0:102", Applies::Send, &given).expect("built");
+        assert_eq!(built.remote_tsap, [0x03, 0x01]);
+        assert_eq!(built.local_tsap, [0x01, 0x00]);
+        assert_eq!(built.size_code, 9);
+        let given = [("tpdu_size_code".to_string(), Given::Integer(14))];
+        let Err(refused) = CotpTransport::open("0.0.0.0:102", Applies::Receive, &given) else {
+            panic!("14 is over the range");
+        };
+        assert!(
+            refused.message.contains("\"tpdu_size_code\""),
+            "{}",
+            refused.message
+        );
+    }
 
     fn node() -> CotpTransport {
         CotpTransport::new("127.0.0.1:0").timing_out_after(Duration::from_secs(2))
