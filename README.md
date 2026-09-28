@@ -6,6 +6,8 @@ A Receive Location keeps its listener, bound on the first receive (`transport::k
 
 A `Connection` is `transport::Pooled`, so a protocol that answers every job over it — s7comm — keeps one between sends (`transport::Pool`). A COTP Send Location itself connects per message: its receiver takes a caller's messages until the caller disconnects, and class 0 acknowledges none, so a kept connection could not tell a message that landed from one written into a closing socket.
 
+A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls, and its query is decoded there. Until 2026-09-28 this technology split the query off itself, without percent-decoding it.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

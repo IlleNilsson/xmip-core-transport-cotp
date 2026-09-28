@@ -135,7 +135,8 @@ impl Connection {
 
     /// The TPDU size settled on.
     #[must_use]
-    pub const fn tpdu_size(&self) -> usize {
+    #[cfg(test)]
+    const fn tpdu_size(&self) -> usize {
         self.tpdu_size
     }
 
