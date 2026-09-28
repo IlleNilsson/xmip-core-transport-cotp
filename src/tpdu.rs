@@ -12,9 +12,9 @@ use transport::error::{Result, protocol_error};
 /// The TPDU size code proposed by default: 2^10, 1024 bytes.
 pub const DEFAULT_SIZE_CODE: u8 = 10;
 /// The largest size code class 0 negotiates: 2^13, 8192 bytes.
-pub const MAX_SIZE_CODE: u8 = 13;
+const MAX_SIZE_CODE: u8 = 13;
 /// The smallest: 2^7, 128 bytes.
-pub const MIN_SIZE_CODE: u8 = 7;
+const MIN_SIZE_CODE: u8 = 7;
 
 const CR: u8 = 0xE0;
 const CC: u8 = 0xD0;

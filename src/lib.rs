@@ -27,6 +27,7 @@ use std::net::TcpListener;
 use std::time::Duration;
 
 pub use connection::Connection;
+use net::Target;
 pub use tpdu::{Connect, Tpdu};
 use transport::error::{Result, protocol_error};
 use transport::kept::Kept;
@@ -65,7 +66,7 @@ impl CotpTransport {
 
     /// The TSAPs a call is made between: this side's, then the far end's.
     #[must_use]
-    pub fn with_tsaps(mut self, local: impl Into<Vec<u8>>, remote: impl Into<Vec<u8>>) -> Self {
+    fn with_tsaps(mut self, local: impl Into<Vec<u8>>, remote: impl Into<Vec<u8>>) -> Self {
         self.local_tsap = local.into();
         self.remote_tsap = remote.into();
         self
@@ -73,7 +74,7 @@ impl CotpTransport {
 
     /// Propose, or accept at most, a TPDU of 2^`code` bytes; 7 to 13.
     #[must_use]
-    pub const fn with_tpdu_size_code(mut self, code: u8) -> Self {
+    const fn with_tpdu_size_code(mut self, code: u8) -> Self {
         self.size_code = code;
         self
     }
@@ -121,27 +122,25 @@ impl CotpTransport {
     /// # Errors
     /// A TSAP in the query that is not hex.
     pub fn resolve(&self, target: &str) -> Result<(String, Vec<u8>, Vec<u8>)> {
-        let Some((authority, _)) = socket::target("cotp", target) else {
+        let Some(named) = Target::under(&["cotp"], target) else {
             return Ok((
                 target.to_string(),
                 self.local_tsap.clone(),
                 self.remote_tsap.clone(),
             ));
         };
-        let (address, query) = authority.split_once('?').unwrap_or((authority, ""));
         let mut local = self.local_tsap.clone();
         let mut remote = self.remote_tsap.clone();
-        for pair in query.split('&').filter(|pair| !pair.is_empty()) {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            let tsap = codec::hex::decode(value)
+        for (key, value) in named.query() {
+            let tsap = codec::hex::decode(&value)
                 .map_err(|_| protocol_error(format!("{value:?} is not a TSAP in hex")))?;
-            match key {
+            match key.as_str() {
                 "src-tsap" => local = tsap,
                 "dst-tsap" => remote = tsap,
                 _ => {}
             }
         }
-        Ok((address.to_string(), local, remote))
+        Ok((named.authority().to_string(), local, remote))
     }
 }
 
