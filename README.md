@@ -8,6 +8,14 @@ A `Connection` is `transport::Pooled`, so a protocol that answers every job over
 
 A send target is read by `net::Target` in [xmip-core-library-net](https://github.com/IlleNilsson/xmip-core-library-net), the one reading of a URI every technology calls, and its query is decoded there. Until 2026-09-28 this technology split the query off itself, without percent-decoding it.
 
+## Acknowledgement
+
+Acceptance is at-most-once here. COTP class 0 acknowledges no data TPDU, and
+the caller's DR ends the connection without waiting for an answer, so nobody
+is told how the receive cycle ended. Each message arrives whole, as its TPDUs
+carried it. A protocol above it that answers, such as S7 or MMS, answers in its
+own terms.
+
 ## Toolchain
 
 `rust-toolchain.toml` pins the toolchain for the whole estate. Do not change it

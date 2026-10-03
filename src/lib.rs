@@ -18,6 +18,11 @@
 //! first. A target is `cotp://host:102`, optionally with the same query to
 //! name the TSAPs for that one call, or a bare `host:port` using the
 //! configured ones.
+//!
+//! **Acceptance is at-most-once here** ([`AT_MOST_ONCE`]): COTP class 0
+//! acknowledges no data TPDU, and the caller's DR ends the connection
+//! without waiting for an answer, so nobody is told how the receive cycle
+//! ended. Each message arrives whole, as the TPDUs carried it.
 
 pub mod connection;
 pub mod tpdu;
@@ -34,8 +39,12 @@ use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
 use transport::socket;
-use transport::{Arrived, Configured, Directions, Transport};
+use transport::{Acknowledgement, Arrived, Configured, Directions, Taken, Transport};
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+
+/// Why a COTP message cannot be acknowledged after the receive cycle.
+pub const AT_MOST_ONCE: &str = "COTP class 0 acknowledges no data: the caller's DR ends the \
+                                connection without waiting for an answer";
 
 #[derive(Clone)]
 pub struct CotpTransport {
@@ -153,15 +162,24 @@ impl Transport for CotpTransport {
         Directions::BOTH
     }
 
+    fn arrivals(&self) -> transport::Arrivals {
+        transport::Arrivals::Ordered("a caller's messages are taken in order until it disconnects")
+    }
+
     /// One caller's messages until it disconnects, from the listener the
-    /// first receive bound and kept.
+    /// first receive bound and kept, each whole. Acceptance is at-most-once
+    /// here: class 0 has no answer to defer ([`AT_MOST_ONCE`]).
     fn receive(&self) -> Result<Vec<Arrived>> {
         let listener = self.receiving.bound(|| self.bind())?;
         let mut connection = self.accept_one(listener)?;
         let origin = connection.origin();
         let mut arrived = Vec::new();
         while let Some(message) = connection.next_data()? {
-            arrived.push(Arrived::new(origin.clone(), message));
+            arrived.push(Arrived::whole(
+                origin.clone(),
+                message,
+                Acknowledgement::at_most_once(AT_MOST_ONCE),
+            ));
         }
         Ok(arrived)
     }
@@ -253,7 +271,7 @@ impl CotpTransport {
 }
 
 impl Accepting for CotpTransport {
-    fn take_one(self, listener: &TcpListener) -> Result<Arrived> {
+    fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         let mut connection = self.accept_one(listener)?;
         let message = connection
             .next_data()?
@@ -261,7 +279,7 @@ impl Accepting for CotpTransport {
         // See the DR that follows, so the goodbye is read rather than met
         // with a closed socket.
         connection.next_data()?;
-        Ok(Arrived::new(connection.origin(), message))
+        Ok(Taken::new(connection.origin(), message))
     }
 }
 
@@ -405,6 +423,11 @@ mod tests {
         connection.disconnect().expect("dr");
         let arrived = receiver.join().expect("thread").expect("receiving");
         assert_eq!(arrived.len(), 2);
+        assert!(arrived.iter().all(|one| !one.defers()), "at-most-once");
+        let arrived: Vec<Taken> = arrived
+            .into_iter()
+            .map(|one| one.taken().expect("taken"))
+            .collect();
         assert_eq!(arrived[0].bytes, b"first");
         assert_eq!(arrived[1].bytes, [7u8; 1500]);
         assert!(arrived[0].origin_uri.starts_with("cotp://127.0.0.1:"));
