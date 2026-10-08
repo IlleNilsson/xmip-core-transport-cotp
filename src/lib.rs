@@ -34,6 +34,7 @@ use std::time::Duration;
 pub use connection::Connection;
 use net::Target;
 pub use tpdu::{Connect, Tpdu};
+use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
 use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
@@ -173,13 +174,17 @@ impl Transport for CotpTransport {
         let listener = self.receiving.bound(|| self.bind())?;
         let mut connection = self.accept_one(listener)?;
         let origin = connection.origin();
+        let peer = connection.peer();
         let mut arrived = Vec::new();
         while let Some(message) = connection.next_data()? {
-            arrived.push(Arrived::whole(
-                origin.clone(),
-                message,
-                Acknowledgement::at_most_once(AT_MOST_ONCE),
-            ));
+            arrived.push(
+                Arrived::whole(
+                    origin.clone(),
+                    message,
+                    Acknowledgement::at_most_once(AT_MOST_ONCE),
+                )
+                .from_peer(peer),
+            );
         }
         Ok(arrived)
     }
@@ -279,11 +284,15 @@ impl Accepting for CotpTransport {
         // See the DR that follows, so the goodbye is read rather than met
         // with a closed socket.
         connection.next_data()?;
-        Ok(Taken::new(connection.origin(), message))
+        Ok(Taken::new(connection.origin(), message).from_peer(connection.peer()))
     }
 }
 
 impl Loopback for CotpTransport {
+    fn arrival_identity(&self) -> ArrivalIdentity {
+        ArrivalIdentity::PEER
+    }
+
     fn far_end(&self) -> Result<Box<dyn FarEnd>> {
         Ok(Box::new(Listening::new(self.clone(), self.bind()?)))
     }
