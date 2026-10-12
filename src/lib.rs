@@ -167,6 +167,10 @@ impl Transport for CotpTransport {
         transport::Arrivals::Ordered("a caller's messages are taken in order until it disconnects")
     }
 
+    fn waiting(&self) -> transport::Waiting {
+        transport::Waiting::Waits("the accept waits for a caller")
+    }
+
     /// One caller's messages until it disconnects, from the listener the
     /// first receive bound and kept, each whole. Acceptance is at-most-once
     /// here: class 0 has no answer to defer ([`AT_MOST_ONCE`]).
