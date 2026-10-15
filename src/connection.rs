@@ -98,7 +98,10 @@ impl Connection {
             tpdu_size: tpdu::size_of(size_code),
         };
         let Some(Tpdu::ConnectRequest(request)) = connection.read()? else {
+            // What the caller sent after its first TPDU is unread, and a
+            // bare drop would reset the DR away.
             connection.write(&Tpdu::Disconnect { reason: 0x80 })?;
+            socket::finish(&connection.writer)?;
             return Err(protocol_error("the caller did not open with CR"));
         };
         let size_code = request.size_code.min(size_code);
@@ -262,21 +265,22 @@ mod tests {
     }
 
     #[test]
-    fn a_caller_that_does_not_open_with_cr_is_refused() {
+    fn a_caller_that_does_not_open_with_cr_is_refused_over_what_it_sent_after() {
+        // The DR is written with megabytes the caller sent after its first
+        // TPDU unread, which a bare drop resets away on Windows.
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
         let address = listener.local_addr().expect("address").to_string();
-        let caller = std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(address).expect("connect");
-            tpkt::write_frame(&mut stream, &[2, 0xF0, 0x80, b'x']).expect("dt");
-            let mut reader = BufReader::new(stream);
-            tpkt::read_frame(&mut reader).expect("answer")
+        let accepting =
+            std::thread::spawn(move || Connection::accept(&listener, 10, Some(secs(2))).err());
+        let mut head = Vec::new();
+        tpkt::write_frame(&mut head, &[2, 0xF0, 0x80, b'x']).expect("dt");
+        let answer = transport::unread::answered_over_unread(&address, &head, 0, |stream| {
+            tpkt::read_frame(&mut BufReader::new(stream))
         });
-        let error = Connection::accept(&listener, 10, Some(secs(2)))
-            .err()
-            .expect("refused");
-        assert!(!error.retryable);
-        let answer = caller.join().expect("thread").expect("dr");
+        let answer = answer.expect("the DR").expect("a frame");
         assert_eq!(answer[1], 0x80, "answered with DR");
+        let error = accepting.join().expect("the far end").expect("refused");
+        assert!(!error.retryable);
     }
 
     fn secs(n: u64) -> Duration {
