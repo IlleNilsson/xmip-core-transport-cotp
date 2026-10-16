@@ -416,10 +416,9 @@ mod tests {
 
     #[test]
     fn receive_takes_a_callers_messages_until_it_disconnects() {
-        // A port the kernel just handed out and nobody else has yet: the
-        // receiver binds it, and the caller retries until it is listening.
-        let (listener, address) = node().bind().expect("a free port");
-        drop(listener);
+        // A port no one holds: the receiver binds it, and the caller
+        // retries until it is listening.
+        let address = net::fixture::unheld().to_string();
         let far_end = address.clone();
         let receiver = std::thread::spawn(move || node_at(&far_end).receive());
         let mut connection = None;
