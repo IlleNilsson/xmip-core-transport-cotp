@@ -13,7 +13,9 @@ A send target is read by `net::Target` in [xmip-core-library-net](https://github
 Acceptance is at-most-once here. COTP class 0 acknowledges no data TPDU, and
 the caller's DR ends the connection without waiting for an answer, so nobody
 is told how the receive cycle ended. Each message arrives whole, as its TPDUs
-carried it. A protocol above it that answers, such as S7 or MMS, answers in its
+carried it. A receive takes every message its connection carries, whatever room the
+runtime gives it (`Transport::receive_up_to`): the sender let go of each as
+it sent it, so none can wait at the far end. A protocol above it that answers, such as S7 or MMS, answers in its
 own terms.
 
 ## Toolchain

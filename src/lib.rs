@@ -174,7 +174,7 @@ impl Transport for CotpTransport {
     /// One caller's messages until it disconnects, from the listener the
     /// first receive bound and kept, each whole. Acceptance is at-most-once
     /// here: class 0 has no answer to defer ([`AT_MOST_ONCE`]).
-    fn receive(&self) -> Result<Vec<Arrived>> {
+    fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let listener = self.receiving.bound(|| self.bind())?;
         let mut connection = self.accept_one(listener)?;
         let origin = connection.origin();
@@ -193,8 +193,15 @@ impl Transport for CotpTransport {
         Ok(arrived)
     }
 
+    fn sending(&self) -> transport::Sending {
+        transport::Sending::Gathered(
+            "one COTP data unit is cut into its TPDUs from the whole of it",
+        )
+    }
+
     /// Connect, deliver one message, disconnect.
-    fn send(&self, target: &str, bytes: &[u8]) -> Result<()> {
+    fn send_from(&self, target: &str, outgoing: transport::Outgoing<'_>) -> Result<()> {
+        let bytes: &[u8] = &outgoing.gather()?;
         let (address, local, remote) = self.resolve(target)?;
         let mut connection =
             Connection::connect(&address, &local, &remote, self.size_code, self.timeout)?;
