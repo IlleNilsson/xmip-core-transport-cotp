@@ -132,7 +132,7 @@ impl CotpTransport {
     /// # Errors
     /// A TSAP in the query that is not hex.
     pub fn resolve(&self, target: &str) -> Result<(String, Vec<u8>, Vec<u8>)> {
-        let Some(named) = Target::under(&["cotp"], target) else {
+        let Some(named) = Target::under(Self::SCHEMES, target) else {
             return Ok((
                 target.to_string(),
                 self.local_tsap.clone(),
@@ -253,6 +253,9 @@ impl Configured for CotpTransport {
             },
         ],
     };
+
+    /// The schemes a Location's address is entered with to choose this technology.
+    const SCHEMES: &'static [&'static str] = &["cotp"];
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let size_code = u8::try_from(settings.integer("tpdu_size_code"))
