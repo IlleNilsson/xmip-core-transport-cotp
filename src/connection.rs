@@ -12,6 +12,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
 use codec::hex;
+use transport::deadline::Within;
 use transport::error::{Result, protocol_error};
 use transport::pool::{Pooled, alive};
 use transport::socket;
@@ -19,13 +20,17 @@ use transport::socket;
 use crate::tpdu::{self, Connect, Tpdu};
 use crate::tpkt;
 
-/// A connected pair of TSAPs and what they agreed on.
+/// A connected pair of TSAPs and what they agreed on: read within each turn
+/// where a Receive Location serves it, as its socket says where none does.
 pub struct Connection {
-    reader: BufReader<TcpStream>,
+    reader: BufReader<Within>,
     writer: TcpStream,
     peer: SocketAddr,
     local_tsap: Vec<u8>,
     remote_tsap: Vec<u8>,
+    /// The TPDU size this side proposes, or accepts at most, as the power
+    /// of two of its bytes.
+    size_code: u8,
     tpdu_size: usize,
 }
 
@@ -47,13 +52,14 @@ impl Connection {
         let peer = stream
             .peer_addr()
             .map_err(|e| transport::error::classify("reading the peer address", &e))?;
-        let (reader, writer) = socket::split(stream)?;
+        let (reader, writer) = Within::new(stream).split()?;
         let mut connection = Self {
             reader,
             writer,
             peer,
             local_tsap: local_tsap.to_vec(),
             remote_tsap: remote_tsap.to_vec(),
+            size_code,
             tpdu_size: tpdu::size_of(size_code),
         };
         connection.write(&Tpdu::ConnectRequest(Connect {
@@ -78,44 +84,85 @@ impl Connection {
     }
 
     /// Accept one caller on `listener` and answer its CR with CC, settling on
-    /// the smaller of its size and 2^`size_code`.
+    /// the smaller of its size and 2^`size_code`, as a far end does.
     ///
     /// # Errors
-    /// Where the connection could not be accepted or did not open with CR.
+    /// Where the connection could not be accepted, or closed or did not open
+    /// with CR.
     pub fn accept(
         listener: &TcpListener,
         size_code: u8,
         timeout: Option<Duration>,
     ) -> Result<Self> {
         let (stream, peer) = socket::accept_tcp(listener, timeout)?;
-        let (reader, writer) = socket::split(stream)?;
-        let mut connection = Self {
+        let mut connection = Self::accepted(Within::new(stream), peer, size_code)?;
+        if !connection.confirm()? {
+            return Err(protocol_error("the caller closed before its CR"));
+        }
+        Ok(connection)
+    }
+
+    /// The called side of a connection a caller opened from `peer`, at most
+    /// 2^`size_code` a TPDU, its CR not yet read ([`Connection::confirm`]).
+    ///
+    /// # Errors
+    /// Where the connection could not be cloned for its writes.
+    pub fn accepted(stream: Within, peer: SocketAddr, size_code: u8) -> Result<Self> {
+        let (reader, writer) = stream.split()?;
+        Ok(Self {
             reader,
             writer,
             peer,
             local_tsap: Vec::new(),
             remote_tsap: Vec::new(),
+            size_code,
             tpdu_size: tpdu::size_of(size_code),
+        })
+    }
+
+    /// Read the caller's CR and answer it with CC, settling on the smaller
+    /// of its TPDU size and this side's: `false` where it closed before
+    /// saying anything — a poke, not a caller.
+    ///
+    /// # Errors
+    /// Where the connection broke, or the caller did not open with CR: it is
+    /// answered with DR.
+    pub fn confirm(&mut self) -> Result<bool> {
+        let request = match self.read()? {
+            Some(Tpdu::ConnectRequest(request)) => request,
+            None => return Ok(false),
+            Some(_) => {
+                // What the caller sent after its first TPDU is unread, and
+                // a bare drop would reset the DR away.
+                self.write(&Tpdu::Disconnect { reason: 0x80 })?;
+                socket::finish(&self.writer)?;
+                return Err(protocol_error("the caller did not open with CR"));
+            }
         };
-        let Some(Tpdu::ConnectRequest(request)) = connection.read()? else {
-            // What the caller sent after its first TPDU is unread, and a
-            // bare drop would reset the DR away.
-            connection.write(&Tpdu::Disconnect { reason: 0x80 })?;
-            socket::finish(&connection.writer)?;
-            return Err(protocol_error("the caller did not open with CR"));
-        };
-        let size_code = request.size_code.min(size_code);
-        connection.tpdu_size = tpdu::size_of(size_code);
-        connection.remote_tsap.clone_from(&request.src_tsap);
-        connection.local_tsap.clone_from(&request.dst_tsap);
-        connection.write(&Tpdu::ConnectConfirm(Connect {
+        let size_code = request.size_code.min(self.size_code);
+        self.tpdu_size = tpdu::size_of(size_code);
+        self.remote_tsap.clone_from(&request.src_tsap);
+        self.local_tsap.clone_from(&request.dst_tsap);
+        self.write(&Tpdu::ConnectConfirm(Connect {
             src_ref: 2,
             dst_ref: request.src_ref,
             size_code,
             src_tsap: request.dst_tsap,
             dst_tsap: request.src_tsap,
         }))?;
-        Ok(connection)
+        Ok(true)
+    }
+
+    /// The socket the connection is, for its readiness.
+    #[must_use]
+    pub const fn socket(&self) -> &TcpStream {
+        &self.writer
+    }
+
+    /// Whether a TPDU already read waits in this side's buffer.
+    #[must_use]
+    pub fn buffered(&self) -> bool {
+        !self.reader.buffer().is_empty()
     }
 
     /// The far end's address.
