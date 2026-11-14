@@ -23,7 +23,12 @@
 //! acknowledges no data TPDU, and the caller's DR ends the connection
 //! without waiting for an answer, so nobody is told how the receive cycle
 //! ended. Each message arrives whole, as the TPDUs carried it.
+//!
+//! **A caller's connection is kept between its messages** ([`caller`]):
+//! every receive takes one message from whichever caller sends first, each
+//! in a turn the node's `[tuning] receive_turn` bounds (2026-11-14).
 
+pub mod caller;
 pub mod connection;
 pub mod tpdu;
 pub mod tpkt;
@@ -31,16 +36,17 @@ pub mod tpkt;
 use std::net::TcpListener;
 use std::time::Duration;
 
+pub use caller::Caller;
 pub use connection::Connection;
 use net::Target;
 pub use tpdu::{Connect, Tpdu};
 use transport::ArrivalIdentity;
 use transport::error::{Result, protocol_error};
-use transport::kept::Kept;
 use transport::listening::{Accepting, Listening};
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+use transport::serving::Serving;
 use transport::socket;
-use transport::{Acknowledgement, Arrived, Configured, Directions, Taken, Transport};
+use transport::{Arrived, Configured, Directions, Taken, Transport};
 use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
 
 /// Why a COTP message cannot be acknowledged after the receive cycle.
@@ -54,8 +60,9 @@ pub struct CotpTransport {
     remote_tsap: Vec<u8>,
     size_code: u8,
     timeout: Option<Duration>,
-    /// The listener the first receive binds, and every receive takes from.
-    receiving: Kept<TcpListener>,
+    /// The listener the first receive binds, and the callers' connections
+    /// kept open on it between their messages.
+    receiving: Serving<Caller>,
 }
 
 impl CotpTransport {
@@ -70,7 +77,7 @@ impl CotpTransport {
             remote_tsap: vec![0x01, 0x02],
             size_code: tpdu::DEFAULT_SIZE_CODE,
             timeout: None,
-            receiving: Kept::new(),
+            receiving: Serving::new(),
         }
     }
 
@@ -171,26 +178,23 @@ impl Transport for CotpTransport {
         transport::Waiting::Waits("the accept waits for a caller")
     }
 
-    /// One caller's messages until it disconnects, from the listener the
-    /// first receive bound and kept, each whole. Acceptance is at-most-once
-    /// here: class 0 has no answer to defer ([`AT_MOST_ONCE`]).
+    /// The callers turned away at their own connection (`transport::serving`).
+    fn turned_away(&self) -> transport::Turned {
+        self.receiving.turned_away()
+    }
+
+    /// The next message from whichever caller sends first, whole, on the
+    /// listener the first receive bound and kept; its connection is kept
+    /// for the next. Acceptance is at-most-once here: class 0 has no answer
+    /// to defer ([`AT_MOST_ONCE`]).
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
-        let listener = self.receiving.bound(|| self.bind())?;
-        let mut connection = self.accept_one(listener)?;
-        let origin = connection.origin();
-        let peer = connection.peer();
-        let mut arrived = Vec::new();
-        while let Some(message) = connection.next_data()? {
-            arrived.push(
-                Arrived::whole(
-                    origin.clone(),
-                    message,
-                    Acknowledgement::at_most_once(AT_MOST_ONCE),
-                )
-                .from_peer(peer),
-            );
-        }
-        Ok(arrived)
+        let arrived = self.receiving.next(
+            || self.bind(),
+            self.timeout,
+            |stream, peer| Caller::new(stream, peer, self.size_code),
+            Caller::turn,
+        )?;
+        Ok(vec![arrived])
     }
 
     fn sending(&self) -> transport::Sending {
@@ -277,6 +281,12 @@ impl Configured for CotpTransport {
             transport = transport.timing_out_after(timeout);
         }
         Ok(transport)
+    }
+
+    /// Each caller's turn on a Receive Location taking at most `turn`.
+    fn turning_within(mut self, turn: Duration) -> Self {
+        self.receiving = self.receiving.turning_within(turn);
+        self
     }
 }
 
@@ -425,12 +435,18 @@ mod tests {
     }
 
     #[test]
-    fn receive_takes_a_callers_messages_until_it_disconnects() {
+    fn each_receive_takes_one_message_from_a_callers_kept_connection() {
         // A port no one holds: the receiver binds it, and the caller
-        // retries until it is listening.
+        // retries until it is listening. Until 2026-11-14 one receive took
+        // the caller's messages until it disconnected.
         let address = net::fixture::unheld().to_string();
         let far_end = address.clone();
-        let receiver = std::thread::spawn(move || node_at(&far_end).receive());
+        let receiver = std::thread::spawn(move || {
+            let receiving = node_at(&far_end);
+            let mut taken = receiving.receive()?;
+            taken.extend(receiving.receive()?);
+            Ok::<_, transport::TransportError>(taken)
+        });
         let mut connection = None;
         for _ in 0..100 {
             if let Ok(open) = node().with_tsaps(vec![2, 1], vec![1, 2]).connect(&address) {
@@ -462,6 +478,39 @@ mod tests {
 
     fn node_at(bind: &str) -> CotpTransport {
         CotpTransport::new(bind).timing_out_after(Duration::from_secs(2))
+    }
+
+    #[test]
+    fn a_caller_that_stops_partway_is_cut_at_its_turn_and_the_next_is_served() {
+        // Until 2026-11-14 it held the Location for as long as a read
+        // waits, two seconds here, and for good where none is set.
+        let turn = Duration::from_millis(200);
+        let receiver = node().turning_within(turn);
+        let address = receiver.receiving.bound(|| receiver.bind()).expect("bound");
+        let address = address.to_string();
+        let mut stopped = std::net::TcpStream::connect(&address).expect("connect");
+        let from = stopped.local_addr().expect("its address");
+        // A TPKT header promising twenty octets, and three of them.
+        let half = [3, 0, 0, 20, 15, 0xE0, 0];
+        std::io::Write::write_all(&mut stopped, &half).expect("half a CR");
+        let at = address.clone();
+        let sender = std::thread::spawn(move || node().send(&at, b"after"));
+        let began = std::time::Instant::now();
+        let arrived = receiver.receive().expect("the next caller");
+        let took = began.elapsed();
+        assert!(
+            took >= turn,
+            "served after {took:?}, inside the other's turn"
+        );
+        assert!(took < Duration::from_millis(1500), "served after {took:?}");
+        let taken = arrived.into_iter().next().expect("one").taken();
+        assert_eq!(taken.expect("taken").bytes, b"after");
+        sender.join().expect("thread").expect("sent");
+        let turned = receiver.turned_away();
+        assert_eq!(turned.callers.len(), 1, "{turned:?}");
+        assert_eq!(turned.callers[0].peer, from);
+        assert!(turned.callers[0].why.message.contains("turn"), "{turned:?}");
+        drop(stopped);
     }
 
     #[test]
