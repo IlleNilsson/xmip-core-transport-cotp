@@ -96,13 +96,6 @@ impl CotpTransport {
         self
     }
 
-    /// Give up on a peer that stops mid-message.
-    #[must_use]
-    pub const fn timing_out_after(mut self, timeout: Duration) -> Self {
-        self.timeout = Some(timeout);
-        self
-    }
-
     /// Bind the listener and report the address actually assigned.
     ///
     /// # Errors
@@ -247,19 +240,21 @@ impl Configured for CotpTransport {
                           of its bytes.",
                 applies: Applies::Both,
             },
-            Setting {
-                name: "timeout",
-                kind: Kind::Duration,
-                presence: Presence::Optional,
-                meaning: "How long a peer that stops mid-message is waited on; unbounded \
-                          when left out.",
-                applies: Applies::Both,
-            },
+            transport::configured::timeout(
+                Applies::Both,
+                None,
+                "How long a peer that stops mid-message is waited on; unbounded \
+                 when left out.",
+            ),
         ],
     };
 
     /// The schemes a Location's address is entered with to choose this technology.
     const SCHEMES: &'static [&'static str] = &["cotp"];
+
+    fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
+        Some(&mut self.timeout)
+    }
 
     fn configured(address: &str, settings: &Read) -> Result<Self> {
         let size_code = u8::try_from(settings.integer("tpdu_size_code"))
@@ -277,9 +272,6 @@ impl Configured for CotpTransport {
         let local = tsap("src_tsap")?.unwrap_or_else(|| transport.local_tsap.clone());
         let remote = tsap("dst_tsap")?.unwrap_or_else(|| transport.remote_tsap.clone());
         transport = transport.with_tsaps(local, remote);
-        if let Some(timeout) = settings.optional_duration("timeout") {
-            transport = transport.timing_out_after(timeout);
-        }
         Ok(transport)
     }
 
