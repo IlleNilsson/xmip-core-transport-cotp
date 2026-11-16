@@ -60,7 +60,7 @@ pub struct CotpTransport {
     remote_tsap: Vec<u8>,
     size_code: u8,
     timeout: Option<Duration>,
-    /// The listener the first receive binds, and the callers' connections
+    /// The listener its open binds, and the callers' connections
     /// kept open on it between their messages.
     receiving: Serving<Caller>,
 }
@@ -177,12 +177,11 @@ impl Transport for CotpTransport {
     }
 
     /// The next message from whichever caller sends first, whole, on the
-    /// listener the first receive bound and kept; its connection is kept
+    /// listener its open bound and kept; its connection is kept
     /// for the next. Acceptance is at-most-once here: class 0 has no answer
     /// to defer ([`AT_MOST_ONCE`]).
     fn receive_up_to(&self, _most: usize) -> Result<Vec<Arrived>> {
         let arrived = self.receiving.next(
-            || self.bind(),
             self.timeout,
             |stream, peer| Caller::new(stream, peer, self.size_code),
             Caller::turn,
@@ -285,6 +284,12 @@ impl Configured for CotpTransport {
     fn timed_by(mut self, clock: &std::sync::Arc<dyn xcore::Clock>) -> Self {
         self.receiving = self.receiving.timed_by(clock);
         self
+    }
+
+    /// The listener every receive takes from, bound where a Receive
+    /// Location listens.
+    fn listening(&self) -> Result<Option<&str>> {
+        self.receiving.bound(|| self.bind()).map(Some)
     }
 }
 
@@ -434,26 +439,22 @@ mod tests {
 
     #[test]
     fn each_receive_takes_one_message_from_a_callers_kept_connection() {
-        // A port no one holds: the receiver binds it, and the caller
-        // retries until it is listening. Until 2026-11-14 one receive took
-        // the caller's messages until it disconnected.
+        // A port no one holds: the receiver listens once opened, and the
+        // caller connects once (the owner, 2026-11-16, *Bind at open*).
+        // Until 2026-11-14 one receive took the caller's messages until it
+        // disconnected.
         let address = net::fixture::unheld().to_string();
-        let far_end = address.clone();
+        let receiving = node_at(&address);
+        receiving.listening().expect("listens");
         let receiver = std::thread::spawn(move || {
-            let receiving = node_at(&far_end);
             let mut taken = receiving.receive()?;
             taken.extend(receiving.receive()?);
             Ok::<_, transport::TransportError>(taken)
         });
-        let mut connection = None;
-        for _ in 0..100 {
-            if let Ok(open) = node().with_tsaps(vec![2, 1], vec![1, 2]).connect(&address) {
-                connection = Some(open);
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let mut connection = connection.expect("the receiver came up");
+        let mut connection = node()
+            .with_tsaps(vec![2, 1], vec![1, 2])
+            .connect(&address)
+            .expect("taken on its first connect");
         connection.send_data(b"first").expect("first");
         connection.send_data(&[7u8; 1500]).expect("second");
         connection.disconnect().expect("dr");
