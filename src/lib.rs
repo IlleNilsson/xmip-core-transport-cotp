@@ -280,6 +280,12 @@ impl Configured for CotpTransport {
         self.receiving = self.receiving.turning_within(turn);
         self
     }
+
+    /// Each callers turn on a Receive Location counted on clock.
+    fn timed_by(mut self, clock: &std::sync::Arc<dyn xcore::Clock>) -> Self {
+        self.receiving = self.receiving.timed_by(clock);
+        self
+    }
 }
 
 impl CotpTransport {
