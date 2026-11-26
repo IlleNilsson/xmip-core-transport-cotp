@@ -10,9 +10,8 @@
 use transport::error::{Result, protocol_error};
 
 // The size code proposed by default is the declaration's, which a
-// Location's `tpdu_size_code` defaults to; named here too, where the
-// protocols riding on COTP take it.
-pub use crate::declaration::DEFAULT_SIZE_CODE;
+// Location's `tpdu_size_code` defaults to.
+use crate::declaration::DEFAULT_SIZE_CODE;
 
 /// The largest size code class 0 negotiates: 2^13, 8192 bytes.
 const MAX_SIZE_CODE: u8 = 13;

@@ -103,7 +103,7 @@ impl CotpTransport {
             bind: bind.into(),
             local_tsap: vec![0x01, 0x00],
             remote_tsap: vec![0x01, 0x02],
-            size_code: tpdu::DEFAULT_SIZE_CODE,
+            size_code: declaration::DEFAULT_SIZE_CODE,
             timeout: None,
             receiving: Serving::new(),
         }
