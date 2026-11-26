@@ -27,32 +27,59 @@
 //! **A caller's connection is kept between its messages** ([`caller`]):
 //! every receive takes one message from whichever caller sends first, each
 //! in a turn the node's `[tuning] receive_turn` bounds (2026-11-14).
+//!
+//! **Built with its `declaration` feature alone** the crate is
+//! [`declaration`], what a Location of it is configured with, and none of
+//! the code above, which is behind the default feature: what the surfaces'
+//! library carries (ADR-0064, amendment 2026-11-26).
 
+#[cfg(feature = "default")]
 pub mod caller;
+#[cfg(feature = "default")]
 pub mod connection;
+#[cfg(feature = "declaration")]
+pub mod declaration;
+#[cfg(feature = "default")]
 pub mod tpdu;
+#[cfg(feature = "default")]
 pub mod tpkt;
 
+#[cfg(feature = "default")]
 use std::net::TcpListener;
+#[cfg(feature = "default")]
 use std::time::Duration;
 
+#[cfg(feature = "default")]
 pub use caller::Caller;
+#[cfg(feature = "default")]
 pub use connection::Connection;
+#[cfg(feature = "default")]
 use net::Target;
+#[cfg(feature = "default")]
 pub use tpdu::{Connect, Tpdu};
+#[cfg(feature = "default")]
 use transport::ArrivalIdentity;
+#[cfg(feature = "default")]
 use transport::error::{Result, protocol_error};
+#[cfg(feature = "default")]
 use transport::listening::{Accepting, Listening};
+#[cfg(feature = "default")]
 use transport::loopback::{FarEnd, LOOPBACK_TIMEOUT, Loopback};
+#[cfg(feature = "default")]
 use transport::serving::Serving;
+#[cfg(feature = "default")]
 use transport::socket;
+#[cfg(feature = "default")]
 use transport::{Arrived, Configured, Directions, Taken, Transport};
-use xcore::settings::{Applies, Fixed, Kind, Presence, Read, Setting, Settings};
+#[cfg(feature = "default")]
+use xcore::settings::{Read, Settings};
 
 /// Why a COTP message cannot be acknowledged after the receive cycle.
+#[cfg(feature = "default")]
 pub const AT_MOST_ONCE: &str = "COTP class 0 acknowledges no data: the caller's DR ends the \
                                 connection without waiting for an answer";
 
+#[cfg(feature = "default")]
 #[derive(Clone)]
 pub struct CotpTransport {
     bind: String,
@@ -65,6 +92,7 @@ pub struct CotpTransport {
     receiving: Serving<Caller>,
 }
 
+#[cfg(feature = "default")]
 impl CotpTransport {
     /// Listen at `bind`; `0.0.0.0:102` is the standard port. Calls go out
     /// from TSAP `0100` to TSAP `0102` until [`Self::with_tsaps`] says
@@ -154,6 +182,7 @@ impl CotpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Transport for CotpTransport {
     fn name(&self) -> &'static str {
         "cotp"
@@ -206,50 +235,10 @@ impl Transport for CotpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Configured for CotpTransport {
-    /// The address is where a Receive Location listens — `0.0.0.0:102` the
-    /// standard port; a Send Location calls the target its route gives.
-    const SETTINGS: &'static Settings = &Settings {
-        technology: env!("CARGO_PKG_NAME"),
-        settings: &[
-            Setting {
-                name: "src_tsap",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "This side's TSAP a call is made from, in hex; the usual client \
-                          TSAP when left out.",
-                applies: Applies::Send,
-            },
-            Setting {
-                name: "dst_tsap",
-                kind: Kind::Text,
-                presence: Presence::Optional,
-                meaning: "The far end's TSAP a call is made to, in hex; the usual server \
-                          TSAP when left out.",
-                applies: Applies::Send,
-            },
-            Setting {
-                name: "tpdu_size_code",
-                kind: Kind::Integer {
-                    minimum: 7,
-                    maximum: 13,
-                },
-                presence: Presence::Default(Fixed::Integer(tpdu::DEFAULT_SIZE_CODE as i64)),
-                meaning: "The TPDU size proposed or accepted at most, as the power of two \
-                          of its bytes.",
-                applies: Applies::Both,
-            },
-            transport::configured::timeout(
-                Applies::Both,
-                None,
-                "How long a peer that stops mid-message is waited on; unbounded \
-                 when left out.",
-            ),
-        ],
-    };
-
-    /// The schemes a Location's address is entered with to choose this technology.
-    const SCHEMES: &'static [&'static str] = &["cotp"];
+    const SETTINGS: &'static Settings = declaration::SETTINGS;
+    const SCHEMES: &'static [&'static str] = declaration::SCHEMES;
 
     fn timeout_kept(&mut self) -> Option<&mut dyn transport::configured::TimeoutKept> {
         Some(&mut self.timeout)
@@ -293,6 +282,7 @@ impl Configured for CotpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl CotpTransport {
     /// Both ends on this machine: an ephemeral local port, the default
     /// TSAPs, the loopback timeout on every read.
@@ -302,6 +292,7 @@ impl CotpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Accepting for CotpTransport {
     fn take_one(self, listener: &TcpListener) -> Result<Taken> {
         let mut connection = self.accept_one(listener)?;
@@ -315,6 +306,7 @@ impl Accepting for CotpTransport {
     }
 }
 
+#[cfg(feature = "default")]
 impl Loopback for CotpTransport {
     fn arrival_identity(&self) -> ArrivalIdentity {
         ArrivalIdentity::PEER
@@ -337,7 +329,7 @@ impl Loopback for CotpTransport {
 mod tests {
     use super::*;
     use transport::payload::edge_payloads;
-    use xcore::settings::Given;
+    use xcore::settings::{Applies, Given};
 
     #[test]
     fn every_receive_takes_from_the_listener_the_first_bound() {
